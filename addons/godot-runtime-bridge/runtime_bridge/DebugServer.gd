@@ -650,15 +650,10 @@ func _input(event: InputEvent) -> void:
 func _cmd_key(req_id: String, args: Dictionary) -> Dictionary:
 	var action: String = str(args.get("action", ""))
 	var keycode: int = int(args.get("keycode", -1))
+	var hold_ms: int = int(args.get("hold_ms", 100))
 	if action != "":
-		var press := InputEventAction.new()
-		press.action = action
-		press.pressed = true
-		_inject_event(press)
-		var release := InputEventAction.new()
-		release.action = action
-		release.pressed = false
-		_inject_event(release)
+		Input.action_press(action)
+		get_tree().create_timer(hold_ms / 1000.0).timeout.connect(func(): Input.action_release(action))
 	elif keycode >= 0:
 		var press := InputEventKey.new()
 		press.keycode = keycode
@@ -667,7 +662,7 @@ func _cmd_key(req_id: String, args: Dictionary) -> Dictionary:
 		var release := InputEventKey.new()
 		release.keycode = keycode
 		release.pressed = false
-		_inject_event(release)
+		get_tree().create_timer(hold_ms / 1000.0).timeout.connect(func(): _inject_event(release))
 	else:
 		return _Protocol.error(req_id, "bad_args", "Provide 'action' or 'keycode'")
 	return _Protocol.ok(req_id)
