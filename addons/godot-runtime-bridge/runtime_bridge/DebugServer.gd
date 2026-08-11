@@ -88,6 +88,25 @@ var _pending_release: bool = false
 var _release_pos: Vector2
 var _release_button: int
 
+## Live action holds: action name -> deadline in Time.get_ticks_msec().
+##
+## Input.action_press() alone cannot hold an action. Godot's
+## Input::_parse_input_event_impl clears it on ANY incoming non-pressed event that
+## matches the action:
+##
+##     if (!is_pressed) {
+##         action_state.api_pressed = false; // Always release the event from action_press() method.
+##
+## Actions bound only to keys survive because no stray key-up for those keycodes
+## reaches an unfocused game window. Mouse-bound actions do not: with
+## MOUSE_MODE_CAPTURED the platform delivers button events regardless of focus, so
+## the first click anywhere kills the hold. Analog-trigger bindings (a resting
+## joypad axis emits a sub-deadzone motion event every frame) kill it the same way.
+##
+## So the hold is re-asserted every frame until its deadline instead of being set
+## once and released by a timer.
+var _held_actions: Dictionary = {}
+
 # Async wait_for tracking
 var _pending_waits: Array = []
 
@@ -195,6 +214,7 @@ func _enforce_windowed() -> void:
 func _exit_tree() -> void:
 	if not _active:
 		return
+	_release_held_actions()
 	_restore_input_isolation()
 	if _grb_logger:
 		_grb_logger.unregister()
@@ -322,6 +342,8 @@ func _process(_delta: float) -> void:
 		var frame := Engine.get_process_frames()
 		if frame < 60 or frame % 30 == 0:
 			_disable_input_recursive(get_tree().root)
+
+	_sustain_held_actions()
 
 	# Handle pending mouse release from previous frame
 	if _pending_release:
@@ -652,20 +674,62 @@ func _cmd_key(req_id: String, args: Dictionary) -> Dictionary:
 	var keycode: int = int(args.get("keycode", -1))
 	var hold_ms: int = int(args.get("hold_ms", 100))
 	if action != "":
+		if not InputMap.has_action(action):
+			return _Protocol.error(req_id, "bad_args", "Unknown input action: " + action)
 		Input.action_press(action)
-		get_tree().create_timer(hold_ms / 1000.0).timeout.connect(func(): Input.action_release(action))
+		# Re-asserted every frame until this deadline — see _held_actions.
+		_held_actions[action] = Time.get_ticks_msec() + hold_ms
 	elif keycode >= 0:
-		var press := InputEventKey.new()
-		press.keycode = keycode
-		press.pressed = true
+		var press := _make_key_event(keycode, true)
 		_inject_event(press)
-		var release := InputEventKey.new()
-		release.keycode = keycode
-		release.pressed = false
+		var release := _make_key_event(keycode, false)
 		get_tree().create_timer(hold_ms / 1000.0).timeout.connect(func(): _inject_event(release))
 	else:
 		return _Protocol.error(req_id, "bad_args", "Provide 'action' or 'keycode'")
 	return _Protocol.ok(req_id)
+
+
+## Builds a key event that can match an InputMap binding authored either way:
+## InputEventKey.action_match compares whichever of keycode / physical_keycode the
+## *binding* carries, so the incoming event must populate both. (Godot's default
+## bindings — WASD, crouch, sneak — are physical; setting only keycode matches none
+## of them, which is why the raw-keycode path used to register nothing at all.)
+func _make_key_event(keycode: int, pressed: bool) -> InputEventKey:
+	var e := InputEventKey.new()
+	e.keycode = keycode
+	e.physical_keycode = keycode
+	e.pressed = pressed
+	return e
+
+
+## Re-assert every live action hold, and release the ones whose deadline passed.
+##
+## Called from both _process and _physics_process: a game that polls
+## Input.is_action_pressed() in _physics_process (common, and this project ticks
+## physics at 120 Hz against a ~60 Hz render) would otherwise see a cleared action
+## on the physics ticks that fall between two rendered frames.
+func _sustain_held_actions() -> void:
+	if _held_actions.is_empty():
+		return
+	var now := Time.get_ticks_msec()
+	# keys() returns a copy, so erasing inside the loop is safe.
+	for action: String in _held_actions.keys():
+		if now >= int(_held_actions[action]):
+			Input.action_release(action)
+			_held_actions.erase(action)
+		elif not Input.is_action_pressed(action):
+			Input.action_press(action)
+
+
+func _release_held_actions() -> void:
+	for action: String in _held_actions.keys():
+		Input.action_release(action)
+	_held_actions.clear()
+
+
+func _physics_process(_delta: float) -> void:
+	if _active:
+		_sustain_held_actions()
 
 
 func _cmd_press_button(req_id: String, node_name: String) -> Dictionary:

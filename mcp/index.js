@@ -425,12 +425,18 @@ const TOOLS = [
   {
     name: "grb_key",
     description:
-      "Inject a key press. Use 'action' for Godot input actions or 'keycode' for raw keycodes.",
+      "Inject a key press. Use 'action' for Godot input actions or 'keycode' for raw keycodes. " +
+      "Pass hold_ms to hold it down — the default 100ms is a tap, which for a held mechanic " +
+      "(aim, sprint, crouch) reads as a brief flash rather than the mechanic not working.",
     inputSchema: {
       type: "object",
       properties: {
         action: { type: "string", description: "Godot input action name" },
         keycode: { type: "number", description: "Raw keycode value" },
+        hold_ms: {
+          type: "number",
+          description: "How long to hold the input down, in milliseconds (default 100).",
+        },
       },
     },
   },
@@ -939,6 +945,7 @@ async function handleTool(name, args) {
       const r = await sendCommand("key", {
         action: args.action || "",
         keycode: args.keycode ?? -1,
+        hold_ms: args.hold_ms ?? 100,
       });
       if (!r.ok) return errResult(r);
       return { content: [{ type: "text", text: "Key sent" }] };
